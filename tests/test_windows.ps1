@@ -65,7 +65,8 @@ try {
                 $tasks=Get-Content -LiteralPath (Join-Path $project '.vscode/tasks.json') -Raw -Encoding UTF8 | ConvertFrom-Json
                 $build=$tasks.tasks[0]
                 $arguments=@($build.args | ForEach-Object { $_.Replace('${workspaceFolder}',$project) })
-                $result=Invoke-CapturedProcess -Exe $build.command -Arguments $arguments
+                $workingDirectory=$build.options.cwd.Replace('${workspaceFolder}',$project)
+                $result=Invoke-CapturedProcess -Exe $build.command -Arguments $arguments -WorkingDirectory $workingDirectory
                 Assert ($result.ExitCode -eq 0) ($result.Output+$result.Error)
                 $result=Invoke-CapturedProcess -Exe (Join-Path $project 'build/main.exe')
                 Assert ($result.ExitCode -eq 0) $result.Error

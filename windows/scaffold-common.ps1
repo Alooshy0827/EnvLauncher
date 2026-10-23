@@ -14,9 +14,10 @@ function ConvertTo-NativeArgument {
 }
 
 function Invoke-CapturedProcess {
-    param([string]$Exe, [string[]]$Arguments = @(), [int]$TimeoutSeconds = 180, [hashtable]$Environment = @{})
+    param([string]$Exe, [string[]]$Arguments = @(), [int]$TimeoutSeconds = 180, [hashtable]$Environment = @{}, [string]$WorkingDirectory = '')
     $info = New-Object System.Diagnostics.ProcessStartInfo
     $info.FileName = $Exe
+    if ($WorkingDirectory) { $info.WorkingDirectory = $WorkingDirectory }
     $info.Arguments = (($Arguments | ForEach-Object { ConvertTo-NativeArgument $_ }) -join ' ')
     $info.UseShellExecute = $false
     $info.CreateNoWindow = $true
@@ -170,7 +171,8 @@ public static class EnvLauncherDirectory {
                 }
                 Write-ProjectText (Join-Path $dir $source) $code
                 Write-ProjectJson (Join-Path $dir '.vscode/c_cpp_properties.json') @{ version=4; configurations=@(@{ name='Windows'; includePath=@('${workspaceFolder}/src/**'); compilerPath=($chain.Compiler -replace '\\','/'); cStandard='c17'; cppStandard='c++17'; intelliSenseMode=$chain.IntelliSense }) }
-                $build = [ordered]@{ label='编译'; type='process'; command=$chain.Compiler; args=@($standard,'-Wall','-Wextra','-g','-O0','-o','${workspaceFolder}/build/main.exe',('${workspaceFolder}/'+$source)); options=@{cwd='${workspaceFolder}'}; problemMatcher=@('$gcc'); group=@{kind='build';isDefault=$true} }
+                # Relative paths keep MinGW's ANSI command-line parser away from Unicode project directories.
+                $build = [ordered]@{ label='编译'; type='process'; command=$chain.Compiler; args=@($standard,'-Wall','-Wextra','-g','-O0','-o','build/main.exe',$source); options=@{cwd='${workspaceFolder}'}; problemMatcher=@('$gcc'); group=@{kind='build';isDefault=$true} }
                 $configuration = [ordered]@{name='调试 (F5)';type='cppdbg';request='launch';program='${workspaceFolder}/build/main.exe';cwd='${workspaceFolder}';externalConsole=$true;MIMode='gdb';preLaunchTask='编译'}
                 if ($chain.Kind -eq 'msvc') {
                     Write-ProjectJson (Join-Path $dir '.vscode/settings.json') @{ 'envlauncher.vcvars'=$chain.Vcvars }
