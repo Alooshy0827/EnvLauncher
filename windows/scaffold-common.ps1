@@ -239,7 +239,7 @@ exit $LASTEXITCODE
                 Write-ProjectText (Join-Path $dir $source) "public class Main {`n    public static void main(String[] args) {`n        System.out.println(`"Hello, Java!`");`n    }`n}"
                 Write-ProjectJson (Join-Path $dir '.vscode/settings.json') @{ 'java.project.sourcePaths'=@('src'); 'java.project.outputPath'='bin'; 'java.configuration.updateBuildConfiguration'='automatic' }
                 $javac = if ($tool) { $tool } else { 'javac' }
-                Write-ProjectJson (Join-Path $dir '.vscode/tasks.json') @{version='2.0.0';tasks=@(@{label='编译';type='process';command=$javac;args=@('-encoding','UTF-8','-d','${workspaceFolder}/bin','${workspaceFolder}/src/Main.java');problemMatcher=@('$javac');group=@{kind='build';isDefault=$true}},@{label='运行';type='process';command='java';args=@('-cp','${workspaceFolder}/bin','Main');dependsOn='编译';problemMatcher=@()})}
+                Write-ProjectJson (Join-Path $dir '.vscode/tasks.json') @{version='2.0.0';tasks=@(@{label='编译';type='process';command=$javac;args=@('-encoding','UTF-8','-d','bin','src/Main.java');options=@{cwd='${workspaceFolder}'};problemMatcher=@('$javac');group=@{kind='build';isDefault=$true}},@{label='运行';type='process';command='java';args=@('-cp','bin','Main');options=@{cwd='${workspaceFolder}'};dependsOn='编译';problemMatcher=@()})}
                 $configuration=@{name='调试 (F5)';type='java';request='launch';mainClass='Main';cwd='${workspaceFolder}'}
                 if (-not $tool) { $warning='没有找到可用的 JDK（javac）。请从 https://adoptium.net/ 安装 JDK，然后重启 VS Code。' }
             }

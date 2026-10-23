@@ -40,9 +40,11 @@ jobs:
         shell: powershell
         run: ./tests/test_windows.ps1
       - name: Verify PowerShell 7 compatibility
+        if: ${{ !cancelled() }}
         shell: pwsh
         run: ./tests/test_windows.ps1
       - name: Smoke test the native window
+        if: ${{ !cancelled() }}
         shell: powershell
         run: |
           $state = Join-Path $env:RUNNER_TEMP 'EnvLauncher-ui'

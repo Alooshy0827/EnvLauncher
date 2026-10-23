@@ -61,23 +61,25 @@ try {
         }
         Assert (-not (Test-CompletedProject $project 17)) 'Nonzero exit accepted as success'
         if ($env:OS -eq 'Windows_NT') {
-            if ($language -in @('c','cpp')) {
+            if ($language -in @('c','cpp','java')) {
                 $tasks=Get-Content -LiteralPath (Join-Path $project '.vscode/tasks.json') -Raw -Encoding UTF8 | ConvertFrom-Json
                 $build=$tasks.tasks[0]
                 $arguments=@($build.args | ForEach-Object { $_.Replace('${workspaceFolder}',$project) })
                 $workingDirectory=$build.options.cwd.Replace('${workspaceFolder}',$project)
                 $result=Invoke-CapturedProcess -Exe $build.command -Arguments $arguments -WorkingDirectory $workingDirectory
                 Assert ($result.ExitCode -eq 0) ($result.Output+$result.Error)
-                $result=Invoke-CapturedProcess -Exe (Join-Path $project 'build/main.exe')
+                if ($language -eq 'java') {
+                    $run=$tasks.tasks[1]
+                    $arguments=@($run.args | ForEach-Object { $_.Replace('${workspaceFolder}',$project) })
+                    $result=Invoke-CapturedProcess -Exe $run.command -Arguments $arguments -WorkingDirectory $workingDirectory
+                } else {
+                    $result=Invoke-CapturedProcess -Exe (Join-Path $project 'build/main.exe')
+                }
                 Assert ($result.ExitCode -eq 0) $result.Error
             } elseif ($language -eq 'py') {
                 $result=Invoke-CapturedProcess -Exe (Join-Path $project '.venv/Scripts/python.exe') -Arguments @((Join-Path $project 'main.py')) -Environment @{PYTHONIOENCODING='utf-8'}
                 Assert ($result.ExitCode -eq 0) $result.Error
-            } elseif ($language -eq 'java') {
-                $result=Invoke-CapturedProcess -Exe 'javac' -Arguments @('-d',(Join-Path $project 'bin'),(Join-Path $project 'src/Main.java'))
-                Assert ($result.ExitCode -eq 0) $result.Error
-                $result=Invoke-CapturedProcess -Exe 'java' -Arguments @('-cp',(Join-Path $project 'bin'),'Main')
-                Assert ($result.ExitCode -eq 0) $result.Error
+
             }
         }
         $job.Process.Dispose()
