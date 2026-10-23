@@ -1,5 +1,14 @@
 ﻿#Requires -Version 5.1
 # Shared scaffolding and subprocess handling. Saved as UTF-8 with BOM for Windows PowerShell.
+# Only controlled launcher children use UTF-8 pipes; leave an interactive shell's encoding alone.
+if ($env:ENVLAUNCHER_UTF8_OUTPUT -eq '1') {
+    $OutputEncoding=New-Object Text.UTF8Encoding($false)
+    # .NET Framework's OutputEncoding setter requires an attached console; these children have pipes.
+    $utf8OutputWriter=[IO.StreamWriter]::new([Console]::OpenStandardOutput(),$OutputEncoding)
+    $utf8OutputWriter.AutoFlush=$true; [Console]::SetOut($utf8OutputWriter)
+    $utf8ErrorWriter=[IO.StreamWriter]::new([Console]::OpenStandardError(),$OutputEncoding)
+    $utf8ErrorWriter.AutoFlush=$true; [Console]::SetError($utf8ErrorWriter)
+}
 function Test-ProjectName {
     param([string]$Name)
     return (-not [string]::IsNullOrWhiteSpace($Name) -and $Name -eq $Name.Trim() -and

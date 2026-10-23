@@ -56,6 +56,7 @@ try {
         $project=Join-Path $root $name
         Assert ($job.Process.ExitCode -eq 0) $output
         Assert (Test-CompletedProject $project $job.Process.ExitCode) ('Incomplete project: '+$output)
+        Assert ($output.Contains($project)) 'Captured project path lost Unicode characters'
         foreach ($json in Get-ChildItem -LiteralPath (Join-Path $project '.vscode') -Filter '*.json') {
             [void](Get-Content -LiteralPath $json.FullName -Raw -Encoding UTF8 | ConvertFrom-Json)
         }
@@ -122,7 +123,7 @@ try {
     Assert (-not (Test-Path -LiteralPath (Join-Path $root 'partial'))) 'Failed project was not cleaned'
     ${function:Write-ProjectText}=$originalWriter
     $argumentsFixture=Join-Path $base 'arguments.ps1'
-    Write-ProjectText $argumentsFixture 'param([string]$Literal) [Console]::Out.Write($Literal)'
+    Write-ProjectText $argumentsFixture 'param([string]$Literal) [Console]::SetOut([IO.StreamWriter]::new([Console]::OpenStandardOutput(),[Text.UTF8Encoding]::new($false))); [Console]::Out.Write($Literal); [Console]::Out.Flush()'
     $shell=Join-Path $PSHOME 'powershell.exe'
     if (-not (Test-Path -LiteralPath $shell)) { $shell=Join-Path $PSHOME 'pwsh' }
     foreach ($literal in @('C:\folder\', 'space and & literal %TEMP% [x]', 'embedded"quote', "中文 ' 单引号")) {

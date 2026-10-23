@@ -68,6 +68,7 @@ function Start-LauncherProcess {
     $info.StandardOutputEncoding=New-Object Text.UTF8Encoding($false)
     $info.StandardErrorEncoding=New-Object Text.UTF8Encoding($false)
     $info.EnvironmentVariables.Remove('ELECTRON_RUN_AS_NODE')
+    $info.EnvironmentVariables['ENVLAUNCHER_UTF8_OUTPUT']='1'
     foreach ($key in $Environment.Keys) { $info.EnvironmentVariables[$key]=$Environment[$key] }
     $process=New-Object Diagnostics.Process; $process.StartInfo=$info
     try { [void]$process.Start() } catch { $process.Dispose(); throw }
