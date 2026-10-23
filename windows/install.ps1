@@ -39,7 +39,7 @@ if (-not (Test-Path -LiteralPath $BinDir)) {
 # 自动收录目录下所有脚本 —— 以后新增环境脚手架不用改这个文件
 $files = @(Get-ChildItem -LiteralPath $SourceDir -Filter '*.ps1' -File -ErrorAction SilentlyContinue |
            Select-Object -ExpandProperty Name)
-$files += 'EnvLauncher.cmd'
+$files += 'EnvLauncher.cmd','vscode.png'
 
 $copied = 0
 foreach ($f in $files) {
@@ -100,7 +100,7 @@ Write-Host "$Green$Bold 安装完成$Reset"
 Write-Host ''
 Write-Host ' 现在可以：'
 Write-Host "   • 双击桌面的「环境启动器」图标启动面板"
-Write-Host "   • 在终端里用$Bold new-c 项目名$Reset / $Bold new-py 项目名$Reset 建项目"
+Write-Host '   • 在 PowerShell 中用 new-c 项目名 -Root D:\Projects 指定保存位置'
 Write-Host ''
 Write-Host "$Dim 提示：如果 new-c 提示找不到命令，重开一个终端窗口即可。$Reset"
 Write-Host ''

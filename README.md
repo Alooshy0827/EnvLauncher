@@ -24,16 +24,22 @@
 # macOS
 git clone https://github.com/Alooshy0827/EnvLauncher.git
 cd EnvLauncher/macos && ./build.sh --install
-cp new-c new-py ~/bin/     # 可选：命令行建项目
+mkdir -p ~/bin
+cp new-* scaffold-common.sh ~/bin/  # 可选：命令行建项目
 ```
 
 **Windows**：下载本仓库 → 右键 `windows/install.ps1` → 使用 PowerShell 运行
 
+## 使用
+
+选择环境、填写项目名和保存位置，点击 **创建并打开**。右侧可搜索和打开最近项目，界面自动跟随系统深浅色。
+
 ## 依赖
 
 - [VS Code](https://code.visualstudio.com/)
-- C 项目：C 编译器（MinGW / clang / MSVC 自动检测）
-- Python 项目：Python 3
+- C / C++：Clang、MinGW-w64 或 Visual Studio C++ Build Tools
+- Python：Python 3
+- Java：JDK（含 `javac`）
 
 ## License
 

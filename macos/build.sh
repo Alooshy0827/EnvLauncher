@@ -13,11 +13,12 @@ set -euo pipefail
 # ── 可配置项 ──
 APP_NAME="环境启动器"              # 应用显示名
 BUNDLE_ID="local.envlauncher"      # 保持与原版一致，重装时替换而不是并存
-VERSION="1.0"
+VERSION="1.3.0"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC="$SCRIPT_DIR/main.swift"
 ICON="$SCRIPT_DIR/assets/AppIcon.icns"
+EDITOR_ICON="$SCRIPT_DIR/../assets/vscode.png"
 DIST="$SCRIPT_DIR/dist"
 APP="$DIST/$APP_NAME.app"
 
@@ -31,6 +32,7 @@ echo "${DIM}  源码: $SRC${RESET}"
 
 # ── 前置检查 ──
 [ -f "$SRC" ] || fail "找不到源码: $SRC"
+[ -f "$EDITOR_ICON" ] || fail "找不到 VS Code 图标: $EDITOR_ICON"
 command -v swiftc >/dev/null 2>&1 || fail "找不到 swiftc，请先安装 Xcode Command Line Tools：xcode-select --install"
 
 # ── 清理 ──
@@ -40,7 +42,9 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 # ── 编译 ──
 echo "  编译中..."
 ERRLOG="$(mktemp)"
-if ! swiftc -O -o "$APP/Contents/MacOS/launcher" "$SRC" 2>"$ERRLOG"; then
+ARCH="$(uname -m)"
+[ "$ARCH" = x86_64 ] || ARCH=arm64
+if ! swiftc -target "$ARCH-apple-macosx11.0" -O -o "$APP/Contents/MacOS/launcher" "$SRC" 2>"$ERRLOG"; then
     cat "$ERRLOG" >&2
     rm -f "$ERRLOG"
     fail "编译失败"
@@ -50,14 +54,16 @@ if grep -q "error:" "$ERRLOG"; then
     rm -f "$ERRLOG"
     fail "编译出现错误"
 fi
-# NSUserNotification 在 macOS 11 起废弃，属已知无害警告，这里静默掉
+# 保留编译警告，便于跟进 SDK 的兼容性变化。
+if [ -s "$ERRLOG" ]; then cat "$ERRLOG" >&2; fi
 WARNCOUNT=$(grep -c "warning:" "$ERRLOG" 2>/dev/null || true)
 rm -f "$ERRLOG"
 [ -n "${WARNCOUNT:-}" ] || WARNCOUNT=0
 [ -f "$APP/Contents/MacOS/launcher" ] || fail "编译失败"
-ok "编译完成 ($(stat -f%z "$APP/Contents/MacOS/launcher") bytes，忽略 $WARNCOUNT 条废弃警告)"
+ok "编译完成 ($(stat -f%z "$APP/Contents/MacOS/launcher") bytes，$WARNCOUNT 条编译警告)"
 
 # ── 图标 ──
+cp "$EDITOR_ICON" "$APP/Contents/Resources/vscode.png"
 if [ -f "$ICON" ]; then
     cp "$ICON" "$APP/Contents/Resources/AppIcon.icns"
     ok "图标已装入"
@@ -70,6 +76,7 @@ fi
 # 这份是 App 自带的兜底，保证不装任何东西也能用。
 mkdir -p "$APP/Contents/Resources/scripts"
 BUNDLED=0
+cp "$SCRIPT_DIR/scaffold-common.sh" "$APP/Contents/Resources/scripts/"
 for s in "$SCRIPT_DIR"/new-*; do
     [ -f "$s" ] || continue
     cp "$s" "$APP/Contents/Resources/scripts/"

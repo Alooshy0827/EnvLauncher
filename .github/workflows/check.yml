@@ -1,0 +1,55 @@
+name: Validate both platforms
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Validate shell syntax
+        run: bash -n macos/scaffold-common.sh && for f in macos/new-* macos/build.sh; do bash -n "$f"; done
+      - name: Generate, compile, run and check failure cases
+        run: python3 tests/test_macos.py && python3 tests/test_native_core.py
+      - name: Build native launcher
+        run: macos/build.sh
+      - name: Check bundled discovery
+        run: ENVLAUNCHER_LIST=1 macos/dist/环境启动器.app/Contents/MacOS/launcher
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Verify Windows PowerShell 5.1, BOM, templates, compilation and failure handling
+        shell: powershell
+        run: ./tests/test_windows.ps1
+      - name: Verify PowerShell 7 compatibility
+        shell: pwsh
+        run: ./tests/test_windows.ps1
+      - name: Smoke test the native window
+        shell: powershell
+        run: |
+          $state = Join-Path $env:RUNNER_TEMP 'EnvLauncher-ui'
+          $env:ENVLAUNCHER_STATE_DIR = $state
+          $p = Start-Process powershell.exe -ArgumentList '-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File windows/EnvLauncher.ps1' -PassThru
+          Start-Sleep 8
+          if ($p.HasExited) { throw "Launcher exited early: $($p.ExitCode)" }
+          $p.Refresh()
+          if ($p.MainWindowHandle -eq 0) { Stop-Process -Id $p.Id; throw "Launcher did not create a native window" }
+          Stop-Process -Id $p.Id

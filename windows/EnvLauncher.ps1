@@ -1,479 +1,243 @@
 ﻿#Requires -Version 5.1
-<#
-    EnvLauncher —— 环境启动器（Windows 版）
-
-    弹出一个面板，选择想要的环境，自动在 VS Code 新窗口打开。
-    本文件是 macOS 版（Swift / Cocoa）的 Windows 移植版本。
-
-    依赖：Windows 自带的 PowerShell 5.1 + .NET WinForms，无需安装任何东西。
-    用法：双击 EnvLauncher.cmd，或运行  powershell -File EnvLauncher.ps1
-#>
-
-$ErrorActionPreference = 'Stop'
-
+param([switch]$List)
+$ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'launcher-core.ps1')
+if ($List) { Get-Scaffolds | Format-Table Id,Label,Path; exit 0 }
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
-[void][System.Windows.Forms.Application]::EnableVisualStyles()
+[Windows.Forms.Application]::EnableVisualStyles()
+. (Join-Path $PSScriptRoot 'theme.ps1')
 
-# ══════════════════════════════════════════════════════════
-#  配置
-# ══════════════════════════════════════════════════════════
-
-$script:AppTitle      = '环境启动器'
-$script:Root          = Join-Path $env:USERPROFILE 'VS Code'
-$script:WorkspaceFile = Join-Path $script:Root 'c-projects.code-workspace'
-$script:UiFont        = [System.Drawing.SystemFonts]::MessageBoxFont
-$script:WarningFileName = '!缺少工具链.md'
-
-# ══════════════════════════════════════════════════════════
-#  工具函数
-# ══════════════════════════════════════════════════════════
-
-# 定位 VS Code 的 code 命令
-function Get-VSCodeCommand {
-    $cmd = Get-Command code -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
-
-    $candidates = New-Object System.Collections.Generic.List[string]
-    if ($env:LOCALAPPDATA)  { $candidates.Add((Join-Path $env:LOCALAPPDATA  'Programs\Microsoft VS Code\bin\code.cmd')) }
-    if ($env:ProgramFiles)  { $candidates.Add((Join-Path $env:ProgramFiles  'Microsoft VS Code\bin\code.cmd')) }
-    $pf86 = ${env:ProgramFiles(x86)}
-    if ($pf86)              { $candidates.Add((Join-Path $pf86              'Microsoft VS Code\bin\code.cmd')) }
-
-    foreach ($c in $candidates) {
-        if ($c -and (Test-Path -LiteralPath $c)) { return $c }
-    }
-    return $null
-}
-
-# 统一的提示框
-function Show-Message {
-    param(
-        [Parameter(Mandatory)][string]$Text,
-        [string]$Title = $script:AppTitle,
-        [string]$Icon  = 'Information'
-    )
-    [void][System.Windows.Forms.MessageBox]::Show(
-        $Text, $Title,
-        [System.Windows.Forms.MessageBoxButtons]::OK,
-        [System.Windows.Forms.MessageBoxIcon]::$Icon
-    )
-}
-
-# 下拉选择框（对应 macOS 版的 NSAlert + NSPopUpButton）
-function Show-ListDialog {
-    param(
-        [Parameter(Mandatory)][string]  $Title,
-        [Parameter(Mandatory)][string]  $Prompt,
-        [Parameter(Mandatory)][string[]]$Items,
-        [string]$OkText = '确定'
-    )
-
-    $form = New-Object System.Windows.Forms.Form
-    try {
-        $form.Text            = $Title
-        $form.ClientSize      = New-Object System.Drawing.Size(400, 158)
-        $form.StartPosition   = 'CenterScreen'
-        $form.FormBorderStyle = 'FixedDialog'
-        $form.MaximizeBox     = $false
-        $form.MinimizeBox     = $false
-        $form.Font            = $script:UiFont
-
-        $label = New-Object System.Windows.Forms.Label
-        $label.Text     = $Prompt
-        $label.Location = New-Object System.Drawing.Point(18, 20)
-        $label.Size     = New-Object System.Drawing.Size(364, 20)
-        $form.Controls.Add($label)
-
-        $combo = New-Object System.Windows.Forms.ComboBox
-        $combo.DropDownStyle = 'DropDownList'
-        $combo.Location      = New-Object System.Drawing.Point(18, 48)
-        $combo.Size          = New-Object System.Drawing.Size(364, 25)
-        [void]$combo.Items.AddRange([object[]]$Items)
-        if ($Items.Count -gt 0) { $combo.SelectedIndex = 0 }
-        $form.Controls.Add($combo)
-
-        $ok = New-Object System.Windows.Forms.Button
-        $ok.Text         = $OkText
-        $ok.DialogResult = [System.Windows.Forms.DialogResult]::OK
-        $ok.Location     = New-Object System.Drawing.Point(212, 102)
-        $ok.Size         = New-Object System.Drawing.Size(80, 30)
-        $form.Controls.Add($ok)
-
-        $cancel = New-Object System.Windows.Forms.Button
-        $cancel.Text         = '取消'
-        $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-        $cancel.Location     = New-Object System.Drawing.Point(302, 102)
-        $cancel.Size         = New-Object System.Drawing.Size(80, 30)
-        $form.Controls.Add($cancel)
-
-        $form.AcceptButton = $ok
-        $form.CancelButton = $cancel
-
-        if ($form.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-            if ($combo.SelectedItem) { return $combo.SelectedItem.ToString() }
-        }
-        return $null
-    }
-    finally {
-        $form.Dispose()
-    }
-}
-
-# ── 向导的一步 ──
-# 对应 macOS 版的主按钮 / 上一步 / 取消 三键布局。
-# 返回值: @{ Nav = 'next'|'back'|'cancel'; Value = 控件当前值 }
-function Show-WizardStep {
-    param(
-        [Parameter(Mandatory)][string]$Title,
-        [Parameter(Mandatory)][string]$Prompt,
-        [System.Windows.Forms.Control]$Accessory,
-        [string]$NextText = '下一步',
-        [switch]$AllowBack
-    )
-
-    $form = New-Object System.Windows.Forms.Form
-    try {
-        $form.Text            = $Title
-        $form.ClientSize      = New-Object System.Drawing.Size(420, 210)
-        $form.StartPosition   = 'CenterScreen'
-        $form.FormBorderStyle = 'FixedDialog'
-        $form.MaximizeBox     = $false
-        $form.MinimizeBox     = $false
-        $form.Font            = $script:UiFont
-
-        $label = New-Object System.Windows.Forms.Label
-        $label.Text     = $Prompt
-        $label.Location = New-Object System.Drawing.Point(18, 16)
-        $label.Size     = New-Object System.Drawing.Size(384, 68)
-        $form.Controls.Add($label)
-
-        if ($Accessory) {
-            $Accessory.Location = New-Object System.Drawing.Point(18, 92)
-            $Accessory.Size     = New-Object System.Drawing.Size(384, 26)
-            $form.Controls.Add($Accessory)
-        }
-
-        # 按钮从右往左排：主按钮最右，取消最左
-        $btnY = 158
-        $next = New-Object System.Windows.Forms.Button
-        $next.Text         = $NextText
-        $next.DialogResult = [System.Windows.Forms.DialogResult]::OK
-        $next.Size         = New-Object System.Drawing.Size(88, 30)
-        $next.Location     = New-Object System.Drawing.Point(314, $btnY)
-        $form.Controls.Add($next)
-
-        $cancel = New-Object System.Windows.Forms.Button
-        $cancel.Text         = '取消'
-        $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-        $cancel.Size         = New-Object System.Drawing.Size(88, 30)
-        $cancel.Location     = New-Object System.Drawing.Point(218, $btnY)
-        $form.Controls.Add($cancel)
-
-        if ($AllowBack) {
-            $back = New-Object System.Windows.Forms.Button
-            $back.Text         = '上一步'
-            # 借用 Retry 表示「上一步」，和 OK / Cancel 区分开
-            $back.DialogResult = [System.Windows.Forms.DialogResult]::Retry
-            $back.Size         = New-Object System.Drawing.Size(88, 30)
-            $back.Location     = New-Object System.Drawing.Point(122, $btnY)
-            $form.Controls.Add($back)
-        }
-
-        $form.AcceptButton = $next
-        $form.CancelButton = $cancel
-
-        if ($Accessory -is [System.Windows.Forms.TextBox]) {
-            $form.Add_Shown({ $Accessory.SelectAll(); $Accessory.Focus() })
-        }
-
-        $result = $form.ShowDialog()
-
-        $nav = 'cancel'
-        if ($result -eq [System.Windows.Forms.DialogResult]::OK) { $nav = 'next' }
-        elseif ($AllowBack -and $result -eq [System.Windows.Forms.DialogResult]::Retry) { $nav = 'back' }
-
-        # 值必须在 Dispose 之前取出来，否则控件已经没了
-        $value = $null
-        if ($Accessory -is [System.Windows.Forms.ComboBox]) {
-            if ($Accessory.SelectedItem) { $value = $Accessory.SelectedItem.ToString() }
-        }
-        elseif ($Accessory -is [System.Windows.Forms.TextBox]) {
-            $value = $Accessory.Text.Trim()
-        }
-
-        return [pscustomobject]@{ Nav = $nav; Value = $value }
-    }
-    finally {
-        $form.Dispose()
-    }
-}
-
-# 扫描已有项目
-function Get-Projects {
-    if (-not (Test-Path -LiteralPath $script:Root)) { return @() }
-    $items = Get-ChildItem -LiteralPath $script:Root -Directory -ErrorAction SilentlyContinue |
-             Where-Object { -not $_.Name.StartsWith('.') } |
-             Sort-Object Name |
-             Select-Object -ExpandProperty Name
-    return @($items)
-}
-
-# 在 VS Code 新窗口打开（-n 强制新窗口）
-function Open-InVSCode {
-    param(
-        [Parameter(Mandatory)][string]$Path,
-        [Parameter(Mandatory)][string]$CodeCmd
-    )
-    Start-Process -FilePath $CodeCmd -ArgumentList @('-n', "`"$Path`"") | Out-Null
-}
-
-# ══════════════════════════════════════════════════════════
-#  脚手架发现
-#
-#  不写死环境列表，而是扫描目录里所有 new-*.ps1，
-#  从脚本开头的 "# @label XXX" 读取显示名。
-#  加新环境 = 丢一个脚本进去，这个文件一行都不用改。
-# ══════════════════════════════════════════════════════════
-
-function Get-ScaffoldDirs {
-    # 顺序即优先级：用户自己的 → PATH 里的 → 与本脚本同目录的兜底副本
-    $dirs = New-Object System.Collections.Generic.List[string]
-    $dirs.Add((Join-Path $env:USERPROFILE 'bin'))
-    if ($env:PATH) {
-        foreach ($d in ($env:PATH -split ';')) {
-            if ($d -and $d.Trim()) { $dirs.Add($d.Trim()) }
-        }
-    }
-    if ($PSScriptRoot) { $dirs.Add($PSScriptRoot) }
-
-    $seen = @{}
-    $out  = New-Object System.Collections.Generic.List[string]
-    foreach ($d in $dirs) {
-        if ($seen.ContainsKey($d)) { continue }
-        $seen[$d] = $true
-        $out.Add($d)
-    }
-    return $out
-}
-
-function Get-Scaffolds {
-    $found = @{}
-    $order = New-Object System.Collections.Generic.List[string]
-
-    foreach ($dir in (Get-ScaffoldDirs)) {
-        if (-not (Test-Path -LiteralPath $dir)) { continue }
-        $files = Get-ChildItem -LiteralPath $dir -Filter 'new-*.ps1' -File -ErrorAction SilentlyContinue
-        foreach ($f in $files) {
-            $id = $f.BaseName
-            if ($found.ContainsKey($id)) { continue }   # 先找到的优先
-
-            $label = $null
-            $head = Get-Content -LiteralPath $f.FullName -TotalCount 20 -ErrorAction SilentlyContinue
-            foreach ($line in $head) {
-                if ($line -match '^\s*#\s*@label\s+(.+?)\s*$') { $label = $Matches[1]; break }
-            }
-            if (-not $label) {
-                # 没有 @label 时回退到文件名（new-py → Py）
-                $label = (Get-Culture).TextInfo.ToTitleCase(($id -replace '^new-', ''))
-            }
-
-            $found[$id] = [pscustomobject]@{ Id = $id; Label = $label; Path = $f.FullName }
-            $order.Add($id)
-        }
-    }
-    return @($order | ForEach-Object { $found[$_] } | Sort-Object Label)
-}
-
-# 调用指定的脚手架脚本建项目
-function Invoke-Scaffold {
-    param(
-        [Parameter(Mandatory)][string]$Path,
-        [Parameter(Mandatory)][string]$Name
-    )
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Path $Name | Out-Null
-}
-
-# ══════════════════════════════════════════════════════════
-#  主流程
-# ══════════════════════════════════════════════════════════
-
+$script:StateDirectory=$env:ENVLAUNCHER_STATE_DIR
+if (-not $script:StateDirectory) { $script:StateDirectory=Join-Path $env:LOCALAPPDATA 'EnvLauncher' }
+$script:SettingsFile=Join-Path $script:StateDirectory 'settings.json'
+$script:Settings=[pscustomobject]@{Root=(Join-Path $env:USERPROFILE 'VS Code');LastScaffold='';Recent=@()}
 try {
-    $codeCmd = Get-VSCodeCommand
-    if (-not $codeCmd) {
-        Show-Message -Icon Error -Title '找不到 VS Code' -Text @"
-没有找到 VS Code 的 code 命令。
-
-请确认已安装 VS Code，并在其中按 Ctrl+Shift+P，
-运行 “Shell Command: Install 'code' command in PATH”。
-
-"@
-        exit 1
+    if (Test-Path -LiteralPath $script:SettingsFile) {
+        $saved=Get-Content -LiteralPath $script:SettingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($saved.Root -is [string] -and $saved.LastScaffold -is [string]) { $script:Settings=$saved; $script:Settings.Recent=@($saved.Recent | Where-Object { $_ -is [string] }) }
     }
+} catch {}
+$script:Scaffolds=@(Get-Scaffolds)
+$script:ActiveTask=$null; $script:Checks=New-Object Collections.ArrayList
+$script:CheckGeneration=0; $script:LastLog=$null
 
-    # 注意：这里**不**预建 $script:Root 目录。
-    # 根目录推迟到第 3 步真正创建项目时才建，这样用户在前面任何一步
-    # 取消，磁盘上都不会留下任何东西（Get-Projects 对目录不存在是安全的）。
-
-    # ══════════════════════════════════════════════════════
-    #  三步向导
-    #
-    #  第 1 步选环境、第 2 步填名字、第 3 步确认。
-    #  前两步**不碰磁盘**，只有第 3 步点「创建」才真正执行脚手架 ——
-    #  中途随时可以「上一步」改回去，或者「取消」走人，
-    #  不会留下一个建完就后悔的项目白占空间。
-    # ══════════════════════════════════════════════════════
-
-    $scaffolds = Get-Scaffolds
-    $menu = @()
-    foreach ($s in $scaffolds) { $menu += "新建 $($s.Label) 项目" }
-    $menu += '打开已有项目'
-    $menu += '打开多项目工作区'
-
-    $stage    = 0
-    $picked   = $null
-    $name     = ''
-    $envIndex = 0
-
-    # 注意：PowerShell 里 switch 内的 continue 等价于跳出 switch（而不是
-    # 跳过 while 的剩余部分）。这里 switch 之后没有别的语句，所以「留在当前
-    # 步骤」的效果正好成立。若以后要在 switch 后面加代码，记得改成显式判断。
-    while ($true) {
-        switch ($stage) {
-
-        # ── 第 1 步：选环境 ──
-        0 {
-            $combo = New-Object System.Windows.Forms.ComboBox
-            $combo.DropDownStyle = 'DropDownList'
-            [void]$combo.Items.AddRange([object[]]$menu)
-            if ($menu.Count -gt 0) {
-                $combo.SelectedIndex = if ($envIndex -ge 0 -and $envIndex -lt $menu.Count) { $envIndex } else { 0 }
-            }
-
-            $r = Show-WizardStep -Title '环境启动器 · 第 1 步，共 3 步' `
-                                 -Prompt '选择要创建或打开的环境：' `
-                                 -Accessory $combo
-            if ($r.Nav -eq 'cancel') { exit 0 }
-
-            if ($combo.SelectedIndex -ge 0) { $envIndex = $combo.SelectedIndex }
-            $choice = $r.Value
-
-            $picked = $scaffolds | Where-Object { "新建 $($_.Label) 项目" -eq $choice } | Select-Object -First 1
-
-            if ($picked) {
-                $stage = 1
-            }
-            elseif ($choice -eq '打开多项目工作区') {
-                # 只读操作，不写磁盘
-                if (Test-Path -LiteralPath $script:WorkspaceFile) {
-                    Open-InVSCode -Path $script:WorkspaceFile -CodeCmd $codeCmd
-                }
-                else {
-                    Show-Message -Icon Warning -Title '工作区不存在' -Text @"
-找不到工作区文件：
-
-$script:WorkspaceFile
-
-可以在 VS Code 里用 “文件 → 将文件夹添加到工作区”
-自己建一个，另存为该路径即可。
-"@
-                }
-                exit 0
-            }
-            else {
-                $projects = Get-Projects
-                if ($projects.Count -eq 0) {
-                    Show-Message -Icon Information -Title '还没有项目' -Text "先新建一个项目吧。`n`n项目目录：$script:Root"
-                }
-                else {
-                    $sel = Show-ListDialog -Title '打开项目' -Prompt '选择要打开的项目：' -Items $projects -OkText '打开'
-                    if ($sel) { Open-InVSCode -Path (Join-Path $script:Root $sel) -CodeCmd $codeCmd }
-                }
-                exit 0
-            }
-        }
-
-        # ── 第 2 步：填项目名 ──
-        1 {
-            $box = New-Object System.Windows.Forms.TextBox
-            $box.Text = if ($name) { $name } else { '我的新项目' }
-
-            $r = Show-WizardStep -Title '环境启动器 · 第 2 步，共 3 步' `
-                                 -Prompt "给「$($picked.Label)」项目起个名字：" `
-                                 -Accessory $box -AllowBack
-            if ($r.Nav -eq 'cancel') { exit 0 }
-            if ($r.Nav -eq 'back') { $stage = 0; continue }
-
-            $name = $r.Value
-
-            # 校验不过就留在本步让用户改，而不是建到一半才报错
-            if (-not $name) {
-                Show-Message -Icon Warning -Title '名字不能为空' -Text '请给项目起个名字。'
-                continue
-            }
-            if ($name -match '[\\/:*?"<>|]') {
-                Show-Message -Icon Warning -Title '名字不合法' -Text "项目名不能包含这些字符： \ / : * ? `" < > |"
-                continue
-            }
-            if (Test-Path -LiteralPath (Join-Path $script:Root $name)) {
-                Show-Message -Icon Warning -Title '项目已存在' -Text "「$name」已经存在了。`n`n换个名字吧。"
-                continue
-            }
-            $stage = 2
-        }
-
-        # ── 第 3 步：确认后才真正创建 ──
-        2 {
-            $dir = Join-Path $script:Root $name
-
-            $r = Show-WizardStep -Title '环境启动器 · 第 3 步，共 3 步' `
-                                 -Prompt "环境：$($picked.Label)`n名称：$name`n位置：$dir" `
-                                 -NextText '创建' -AllowBack
-            if ($r.Nav -eq 'cancel') { exit 0 }
-            if ($r.Nav -eq 'back') { $stage = 1; continue }
-
-            # ★★★ 整个程序里唯一产生副作用的地方 ★★★
-            if (-not (Test-Path -LiteralPath $script:Root)) {
-                New-Item -ItemType Directory -Path $script:Root -Force | Out-Null
-            }
-            try {
-                Invoke-Scaffold -Path $picked.Path -Name $name
-            }
-            catch {
-                Show-Message -Icon Error -Title '创建失败' -Text $_.Exception.Message
-                exit 1
-            }
-
-            if (-not (Test-Path -LiteralPath $dir)) {
-                Show-Message -Icon Error -Title '创建失败' -Text @"
-脚手架执行完了，但没有生成目录：
-
-$dir
-
-可以在 PowerShell 里手动跑一次看报错：
-$($picked.Path) $name
-"@
-                exit 1
-            }
-
-            Open-InVSCode -Path $dir -CodeCmd $codeCmd
-
-            # 脚手架发现缺工具链时会在项目里留下提示文件，这里再强提醒一次
-            if (Test-Path -LiteralPath (Join-Path $dir $script:WarningFileName)) {
-                Show-Message -Icon Warning -Title '⚠️ 缺少工具链' -Text @"
-项目已创建，但本机缺少它需要的工具链，现在还不能编译。
-
-已在项目里生成「$($script:WarningFileName)」，里面有安装方法。
-"@
-            }
-            exit 0
-        }
-
-        default { exit 0 }
-        }
-    }
+$form=New-Object Windows.Forms.Form
+$form.Text='环境启动器'; $form.ClientSize=New-Object Drawing.Size(860,590)
+$form.StartPosition='CenterScreen'; $form.FormBorderStyle='FixedDialog'; $form.MaximizeBox=$false
+$form.Font=New-Object Drawing.Font('Segoe UI',9)
+$form.AutoScaleDimensions=New-Object Drawing.SizeF(96,96); $form.AutoScaleMode='Dpi'
+function Add-Label {
+    param([string]$Text,[int]$X,[int]$Y,[int]$W,[int]$H,[switch]$Bold)
+    $control=New-Object Windows.Forms.Label; $control.Text=$Text
+    $control.SetBounds($X,$Y,$W,$H)
+    if ($Bold) { $control.Font=New-Object Drawing.Font($form.Font.FontFamily,15,[Drawing.FontStyle]::Bold) }
+    $form.Controls.Add($control); return $control
 }
-catch {
-    Show-Message -Icon Error -Title "$script:AppTitle 出错了" -Text $_.Exception.Message
-    exit 1
+function Add-Button {
+    param([string]$Text,[int]$X,[int]$Y,[int]$W,[scriptblock]$Click)
+    $control=New-Object Windows.Forms.Button; $control.Text=$Text; $control.SetBounds($X,$Y,$W,32)
+    $control.Add_Click($Click); $form.Controls.Add($control); return $control
+}
+$editorIcon=New-Object Windows.Forms.PictureBox
+$editorIcon.SetBounds(20,23,64,64); $editorIcon.SizeMode='Zoom'
+$editorIcon.AccessibleName='Visual Studio Code'; $editorIcon.TabStop=$false
+$editorIcon.Image=[Drawing.Image]::FromFile((Join-Path $PSScriptRoot 'vscode.png'))
+$form.Controls.Add($editorIcon)
+[void](Add-Label '新建项目' 96 25 294 28 -Bold)
+[void](Add-Label '选好环境，直接开始写代码。' 96 60 294 24)
+[void](Add-Label '环境' 28 108 360 22)
+$environment=New-Object Windows.Forms.ComboBox; $environment.DropDownStyle='DropDownList'; $environment.SetBounds(28,134,362,28)
+foreach ($scaffold in $script:Scaffolds) { [void]$environment.Items.Add($scaffold.Label) }
+if ($script:Scaffolds.Count) {
+    $environment.SelectedIndex=0
+    for ($i=0;$i -lt $script:Scaffolds.Count;$i++) { if ($script:Scaffolds[$i].Id -eq $script:Settings.LastScaffold) { $environment.SelectedIndex=$i } }
+}
+$form.Controls.Add($environment)
+[void](Add-Label '项目名称' 28 181 360 22)
+$name=New-Object Windows.Forms.TextBox; $name.SetBounds(28,208,362,28); $form.Controls.Add($name)
+[void](Add-Label '保存到' 28 253 360 22)
+$location=New-Object Windows.Forms.TextBox; $location.SetBounds(28,280,276,28); $location.Text=$script:Settings.Root; $form.Controls.Add($location)
+$browse=Add-Button '选择…' 312 277 78 {
+    $dialog=New-Object Windows.Forms.FolderBrowserDialog
+    try { $dialog.SelectedPath=$location.Text; if ($dialog.ShowDialog() -eq 'OK') { $location.Text=$dialog.SelectedPath } } finally { $dialog.Dispose() }
+}
+$preview=Add-Label '' 28 320 362 44; $preview.ForeColor=[Drawing.SystemColors]::GrayText
+$tooltip=New-Object Windows.Forms.ToolTip
+$toolchain=Add-Label '' 28 375 362 98; $toolchain.ForeColor=[Drawing.SystemColors]::GrayText
+$create=Add-Button '创建并打开' 252 482 138 { Start-Creation }
+$form.AcceptButton=$create
+$line=New-Object Windows.Forms.Label; $line.BorderStyle='Fixed3D'; $line.SetBounds(417,28,2,490); $form.Controls.Add($line)
+[void](Add-Label '最近项目' 446 25 386 28 -Bold)
+$search=New-Object Windows.Forms.TextBox; $search.SetBounds(446,68,386,28); $form.Controls.Add($search)
+[void](Add-Label '搜索名称或路径' 446 99 386 20)
+$recent=New-Object Windows.Forms.ListView; $recent.SetBounds(446,126,386,333)
+$recent.View='Details'; $recent.FullRowSelect=$true; $recent.MultiSelect=$false; $recent.HideSelection=$false
+[void]$recent.Columns.Add('项目',140); [void]$recent.Columns.Add('位置',218); $form.Controls.Add($recent)
+$empty=Add-Label '最近打开的项目将显示在这里。' 461 174 352 45
+$openFolder=Add-Button '打开文件夹…' 446 482 124 {
+    $dialog=New-Object Windows.Forms.FolderBrowserDialog
+    try { if ($dialog.ShowDialog() -eq 'OK') { Open-Project $dialog.SelectedPath } } finally { $dialog.Dispose() }
+}
+$openWorkspace=Add-Button '打开工作区…' 577 482 124 {
+    $dialog=New-Object Windows.Forms.OpenFileDialog
+    $dialog.Filter='VS Code 工作区 (*.code-workspace)|*.code-workspace'
+    try { if ($dialog.ShowDialog() -eq 'OK') { Open-Project $dialog.FileName } } finally { $dialog.Dispose() }
+}
+$openRecent=Add-Button '打开' 708 482 124 { Open-SelectedRecent }
+$footer=New-Object Windows.Forms.Label; $footer.BorderStyle='Fixed3D'; $footer.SetBounds(28,531,804,2); $form.Controls.Add($footer)
+$status=Add-Label '文件准备完成后会在 VS Code 新窗口打开。' 28 545 642 36
+$status.Font=New-Object Drawing.Font($form.Font.FontFamily,10.5)
+$logButton=Add-Button '查看日志' 736 541 96 { if ($script:LastLog) { Start-Process -FilePath notepad.exe -ArgumentList (ConvertTo-NativeArgument $script:LastLog) } }
+$logButton.Enabled=$false
+$progress=New-Object Windows.Forms.ProgressBar; $progress.SetBounds(28,577,804,5); $progress.Style='Marquee'; $progress.Visible=$false; $form.Controls.Add($progress)
+
+function Show-Failure { param([string]$Text) [void][Windows.Forms.MessageBox]::Show($form,$Text,'操作未完成','OK','Warning') }
+function Save-Settings {
+    try {
+        [void][IO.Directory]::CreateDirectory($script:StateDirectory)
+        $temporary=$script:SettingsFile+'.'+[guid]::NewGuid().ToString()+'.tmp'
+        Write-ProjectJson $temporary $script:Settings
+        Move-Item -LiteralPath $temporary -Destination $script:SettingsFile -Force
+    } catch { $status.Text='项目可用，但无法保存最近记录：'+$_.Exception.Message }
+}
+function Refresh-Recent {
+    $recent.Items.Clear()
+    foreach ($path in @($script:Settings.Recent)) {
+        if ($search.Text -and $path.IndexOf($search.Text,[StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+        $item=New-Object Windows.Forms.ListViewItem([IO.Path]::GetFileName($path.TrimEnd('\','/')))
+        [void]$item.SubItems.Add($path); $item.Tag=$path; [void]$recent.Items.Add($item)
+    }
+    $empty.Text=if ($search.Text) { '没有匹配的最近项目。' } else { '最近打开的项目将显示在这里。' }
+    $empty.Visible=$recent.Items.Count -eq 0
+}
+function Record-Recent {
+    param([string]$Path)
+    $script:Settings.Recent=@($Path)+@($script:Settings.Recent | Where-Object { $_ -ne $Path })
+    $script:Settings.Recent=@($script:Settings.Recent | Select-Object -First 30)
+    Save-Settings; Refresh-Recent
+}
+function Update-Preview {
+    $preview.Text=$location.Text.TrimEnd('\','/')+'\'+$name.Text
+    $tooltip.SetToolTip($preview,$preview.Text)
+    $create.Enabled=-not $script:ActiveTask -and (Test-ProjectName $name.Text) -and [IO.Path]::IsPathRooted($location.Text) -and $environment.SelectedIndex -ge 0
+    if ($name.Text -and -not (Test-ProjectName $name.Text)) { $status.Text='请使用有效名称，避开路径分隔符、保留名称，以及开头的空格和结尾的空格/句点。' }
+    elseif (-not $script:ActiveTask) { $status.Text='文件准备完成后会在 VS Code 新窗口打开。' }
+}
+function Set-Busy {
+    param([bool]$Busy)
+    foreach ($control in @($environment,$name,$location,$browse,$openFolder,$openWorkspace,$openRecent,$recent,$search)) { $control.Enabled=-not $Busy }
+    $progress.Visible=$Busy
+    if ($Busy) { $create.Enabled=$false } else { Update-Preview }
+}
+function Refresh-Toolchain {
+    $script:CheckGeneration++
+    if ($environment.SelectedIndex -lt 0) { $toolchain.Text='未发现脚手架，请重新安装应用。'; return }
+    $scaffold=$script:Scaffolds[$environment.SelectedIndex]
+    if ($scaffold.Protocol -lt 2) { $toolchain.Text='自定义脚手架：'+$scaffold.Path+"`n保存位置通过 ENVLAUNCHER_ROOT 传入。"; return }
+    $toolchain.Text='正在检测工具链…'
+    try {
+        $job=Start-LauncherProcess -Script $scaffold.Path -Arguments @('-Check')
+        $job | Add-Member -NotePropertyName Generation -NotePropertyValue $script:CheckGeneration
+        [void]$script:Checks.Add($job)
+    } catch { $toolchain.Text='工具链检测失败：'+$_.Exception.Message }
+}
+function Start-Creation {
+    if ($script:ActiveTask -or -not (Test-ProjectName $name.Text)) { return }
+    try {
+        if (-not [IO.Path]::IsPathRooted($location.Text)) { throw '请选择有效的绝对保存路径。' }
+        $root=[IO.Path]::GetFullPath($location.Text)
+        $target=Join-Path $root $name.Text
+        if (Test-Path -LiteralPath $target) { throw "项目已存在：$target`n请换一个名称，或打开已有项目。" }
+        $code=Get-VSCodeCommand
+        if (-not $code) { throw '没有找到 VS Code。请先安装 VS Code，或将 code 命令加入 PATH。' }
+        $scaffold=$script:Scaffolds[$environment.SelectedIndex]
+        $arguments=@($name.Text)
+        $childEnvironment=@{ENVLAUNCHER_ROOT=$root}
+        if ($scaffold.Protocol -ge 2) {
+            # powershell.exe -File reparses leading dashes even in quoted values.
+            # Pass the name as a child-only environment value to preserve it literally.
+            $arguments=@('-Root',$root); $childEnvironment.ENVLAUNCHER_NAME=$name.Text
+        }
+        $job=Start-LauncherProcess -Script $scaffold.Path -Arguments $arguments -Environment $childEnvironment
+        $script:Settings.Root=$root; $script:Settings.LastScaffold=$scaffold.Id
+        $script:ActiveTask=[pscustomobject]@{Kind='Create';Job=$job;Path=$target;Code=$code;Protocol=$scaffold.Protocol}
+        Set-Busy $true; $status.Text='正在创建 '+$name.Text+'…窗口会保持打开。'
+    } catch { Show-Failure $_.Exception.Message }
+}
+function Start-Open {
+    param([string]$Path,[string]$Code)
+    $job=Start-LauncherProcess -Script (Join-Path $PSScriptRoot 'open-vscode.ps1') -Arguments @('-Code',$Code,'-Path',$Path)
+    $script:ActiveTask=[pscustomobject]@{Kind='Open';Job=$job;Path=$Path;Code=$Code;Protocol=0}
+    Set-Busy $true; $status.Text='正在打开项目…'
+}
+function Open-Project {
+    param([string]$Path)
+    if ($script:ActiveTask) { return }
+    try {
+        if (-not (Test-Path -LiteralPath $Path)) { throw "项目路径已移动或删除：$Path" }
+        $code=Get-VSCodeCommand
+        if (-not $code) { throw '没有找到 VS Code，请先安装 VS Code。' }
+        Start-Open $Path $code
+    } catch { Show-Failure $_.Exception.Message }
+}
+function Open-SelectedRecent { if ($recent.SelectedItems.Count -gt 0) { Open-Project ([string]$recent.SelectedItems[0].Tag) } }
+$recent.Add_DoubleClick({ Open-SelectedRecent })
+$name.Add_TextChanged({ Update-Preview }); $location.Add_TextChanged({ Update-Preview })
+$search.Add_TextChanged({ Refresh-Recent }); $environment.Add_SelectedIndexChanged({ Refresh-Toolchain })
+
+$timer=New-Object Windows.Forms.Timer; $timer.Interval=120
+$script:LastThemeCheck=[DateTime]::MinValue
+$timer.Add_Tick({
+    if (([DateTime]::UtcNow-$script:LastThemeCheck).TotalSeconds -ge 1) {
+        $script:LastThemeCheck=[DateTime]::UtcNow
+        Set-LauncherTheme -Form $form -SecondaryControls @($preview,$toolchain,$empty,$status) -Separators @($line,$footer) -InputOverlays @($empty)
+    }
+    foreach ($check in @($script:Checks.ToArray())) {
+        if (-not $check.Process.HasExited) { continue }
+        try {
+            $output=$check.Output.GetAwaiter().GetResult()+$check.Error.GetAwaiter().GetResult()
+            if ($check.Generation -eq $script:CheckGeneration) { $toolchain.Text=$output.Trim() }
+        } catch { $toolchain.Text='检测未完成，创建时会记录详细日志。' }
+        finally { $check.Process.Dispose(); [void]$script:Checks.Remove($check) }
+    }
+    if (-not $script:ActiveTask -or -not $script:ActiveTask.Job.Process.HasExited) { return }
+    $task=$script:ActiveTask; $script:ActiveTask=$null
+    try {
+        $exitCode=$task.Job.Process.ExitCode
+        $output=$task.Job.Output.GetAwaiter().GetResult()+$task.Job.Error.GetAwaiter().GetResult()
+        [void][IO.Directory]::CreateDirectory((Join-Path $script:StateDirectory 'Logs'))
+        $script:LastLog=Join-Path $script:StateDirectory ('Logs\'+[guid]::NewGuid().ToString()+'.log')
+        Write-ProjectText $script:LastLog ("退出码：$exitCode`n"+$output)
+        $logButton.Enabled=$true
+        Set-Busy $false
+        if ($task.Kind -eq 'Create') {
+            if (-not (Test-CompletedProject -Path $task.Path -ExitCode $exitCode -Protocol $task.Protocol)) {
+                $status.Text='创建失败；可修改后重试。点击“查看日志”了解原因。'
+                if ($output.Length -gt 1400) { $output=$output.Substring($output.Length-1400) }
+                Show-Failure ("脚手架退出码：$exitCode`n项目未完整生成。`n"+$output)
+            } else {
+                Record-Recent $task.Path
+                Start-Open $task.Path $task.Code
+            }
+        } elseif ($exitCode -ne 0) {
+            $status.Text='项目已保留，但无法打开 VS Code。点击“查看日志”了解原因。'
+            Show-Failure $status.Text
+        } else {
+            Record-Recent $task.Path
+            $status.Text='已打开：'+[IO.Path]::GetFileName($task.Path)
+            if (Test-Path -LiteralPath (Join-Path $task.Path '!缺少工具链.md')) { $status.Text='项目已打开。工具链需要处理，请查看项目内的 !缺少工具链.md。' }
+        }
+    } catch { Set-Busy $false; Show-Failure $_.Exception.Message }
+    finally { $task.Job.Process.Dispose() }
+})
+$form.Add_FormClosing({ param($sender,$eventArgs) if ($script:ActiveTask) { $eventArgs.Cancel=$true; $status.Text='正在处理项目，请等待完成后关闭。' } })
+$form.Add_Shown({ Set-LauncherTheme -Form $form -SecondaryControls @($preview,$toolchain,$empty,$status) -Separators @($line,$footer) -InputOverlays @($empty) -Force; Refresh-Recent; Update-Preview; Refresh-Toolchain; $timer.Start(); $name.Focus() })
+Enable-LauncherThemedDrawing -EnvironmentCombo $environment -RecentList $recent
+Set-LauncherTheme -Form $form -SecondaryControls @($preview,$toolchain,$empty,$status) -Separators @($line,$footer) -InputOverlays @($empty) -Force
+try { [void]$form.ShowDialog() }
+finally {
+    $timer.Stop(); $timer.Dispose()
+    foreach ($check in $script:Checks) { try { if (-not $check.Process.HasExited) { $check.Process.Kill() } } catch {}; $check.Process.Dispose() }
+    $tooltip.Dispose(); $editorIcon.Image.Dispose(); $form.Dispose()
 }
