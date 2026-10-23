@@ -71,7 +71,7 @@ try {
                 $result=Invoke-CapturedProcess -Exe (Join-Path $project 'build/main.exe')
                 Assert ($result.ExitCode -eq 0) $result.Error
             } elseif ($language -eq 'py') {
-                $result=Invoke-CapturedProcess -Exe (Join-Path $project '.venv/Scripts/python.exe') -Arguments @((Join-Path $project 'main.py'))
+                $result=Invoke-CapturedProcess -Exe (Join-Path $project '.venv/Scripts/python.exe') -Arguments @((Join-Path $project 'main.py')) -Environment @{PYTHONIOENCODING='utf-8'}
                 Assert ($result.ExitCode -eq 0) $result.Error
             } elseif ($language -eq 'java') {
                 $result=Invoke-CapturedProcess -Exe 'javac' -Arguments @('-d',(Join-Path $project 'bin'),(Join-Path $project 'src/Main.java'))
